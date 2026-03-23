@@ -55,3 +55,75 @@ jobs:
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MY_PAT: ${{ secrets.MY_PAT }}
+
+      - name: "📁 Prepare task and branch"
+        id: prepare
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_LABELS: ${{ join(github.event.issue.labels.*.name, ',') }}
+        run: |
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          BRANCH_NAME="ai/task-${ISSUE_NUMBER}-${TIMESTAMP}"
+          echo "branch_name=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+          mkdir -p ai/tasks
+          TASK_FILE="ai/tasks/task-${ISSUE_NUMBER}.md"
+          echo "task_file=$TASK_FILE" >> $GITHUB_OUTPUT
+
+          FAST_MODE=false
+          if echo "$ISSUE_LABELS" | grep -q "ai-fast"; then
+            FAST_MODE=true
+          fi
+          echo "fast_mode=$FAST_MODE" >> $GITHUB_OUTPUT
+
+          {
+            echo "# Task — Issue #${ISSUE_NUMBER}"
+            echo ""
+            echo "## What needs to be done"
+            echo "$ISSUE_BODY"
+            echo ""
+            echo "## Rules"
+            echo "- Follow existing code patterns, file structure and naming conventions"
+            echo "- Frontend is under src/ (React, TypeScript, Vite, Tailwind CSS)"
+            echo "- Backend is under backend/ (Node.js, Express, MongoDB/Mongoose)"
+            echo "- Do not modify unrelated files"
+            echo "- Do not change package.json, lock files or config files unless explicitly required"
+            echo "- Never modify authentication, environment configuration or database schema unless explicitly requested"
+            echo "- Implement only minimal and safe changes"
+            echo "- Do not refactor unrelated code"
+          } > "$TASK_FILE"
+
+          git checkout -b "$BRANCH_NAME"
+
+      - name: "🧠 AI Planner"
+        id: planner
+        if: steps.prepare.outputs.fast_mode == 'false'
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          TASK_FILE: ${{ steps.prepare.outputs.task_file }}
+          FAST_MODE: ${{ steps.prepare.outputs.fast_mode }}
+        run: |
+          echo "Planning task for issue #${ISSUE_NUMBER}..."
+          PLAN_FILE="ai/tasks/plan-${ISSUE_NUMBER}.md"
+
+          curl -sS -X POST "https://api.openai.com/v1/chat/completions" \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d '{
+              "model": "gpt-4o-mini",
+              "messages": [
+                {
+                  "role": "system",
+                  "content": "You are a senior software engineer planning a small change in a codebase. The task is described in the file $TASK_FILE. Create a comprehensive implementation plan, breaking down the task into clear, actionable steps. Provide relevant code snippets or examples to help understand how to implement the solution effectively. Follow the rules and constraints outlined in the task description."
+                },
+                {
+                  "role": "user",
+                  "content": "Please create a comprehensive implementation plan for the task described in the file $TASK_FILE. Break down the task into clear, actionable steps, and provide any relevant code snippets or examples that would help in understanding how to implement the solution effectively."
+                }
+              ]
+            }' | jq -r '.choices[0].message.content' > "$PLAN_FILE"
+
+          echo "Plan is: $(cat $PLAN_FILE)"
+          echo "plan_file=$PLAN_FILE" >> $GITHUB_OUTPUT
